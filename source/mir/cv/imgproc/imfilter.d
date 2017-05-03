@@ -139,14 +139,17 @@ int separable_imfilter_impl(T)
     return 0;
 }
 
-pragma(inline, true) void inner_filtering_impl(alias InstructionSet)(
-    Slice!(Universal, [2], InstructionSet.Scalar*) input, Slice!(Universal,
-    [2], InstructionSet.Scalar*) temp, Slice!(Universal, [1],
-    InstructionSet.Scalar*) hmask, Slice!(Universal, [1],
-    InstructionSet.Scalar*) vmask, Slice!(Universal, [2],
-    InstructionSet.Scalar*) output,
-    Horizontal_kernel_func!InstructionSet hkernel, Vertical_kernel_func!InstructionSet vkernel,
-    )
+pragma(inline, true)
+void inner_filtering_impl(alias InstructionSet)
+(
+    Slice!(Universal, [2], InstructionSet.Scalar*) input,
+    Slice!(Universal, [2], InstructionSet.Scalar*) temp,
+    Slice!(Universal, [1], InstructionSet.Scalar*) hmask,
+    Slice!(Universal, [1], InstructionSet.Scalar*) vmask,
+    Slice!(Universal, [2], InstructionSet.Scalar*) output,
+    Horizontal_kernel_func!InstructionSet hkernel,
+    Vertical_kernel_func!InstructionSet vkernel,
+)
 in
 {
     assert(input.shape == temp.shape, "Incompatible input and temporary buffer slice");
@@ -154,7 +157,6 @@ in
 }
 body
 {
-
     alias T = InstructionSet.Scalar;
     alias V = InstructionSet.Vector;
     immutable velems = InstructionSet.elementCount;
@@ -259,7 +261,8 @@ body
     }
 }
 
-pragma(inline, true) void borders_replicate_impl(T)
+pragma(inline, true)
+void borders_replicate_impl(T)
 (
     Slice!(Universal, [2], T*) output,
     size_t hsize,
@@ -386,8 +389,13 @@ void apply_vertical_kernel(T)(T* i, T* k, T* o, size_t msize,
 // SIMD kernels ////////////////////////////////////////////////////////////////
 
 pragma(inline, true)
-void apply_horizontal_kernel_simd(alias InstructionSet)(
-    InstructionSet.Scalar* i, InstructionSet.Vector* k, InstructionSet.Scalar* o, size_t ksize)
+void apply_horizontal_kernel_simd(alias InstructionSet)
+(
+    InstructionSet.Scalar* i,
+    InstructionSet.Vector* k,
+    InstructionSet.Scalar* o,
+    size_t ksize
+)
 {
     alias V = InstructionSet.Vector;
     V e = InstructionSet.Scalar(0);
