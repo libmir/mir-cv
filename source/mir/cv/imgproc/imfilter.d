@@ -8,7 +8,7 @@ import core.stdc.stdlib;
 
 import mir.utility : max;
 
-import mir.ndslice.slice : Slice, Universal, sliced;
+import mir.ndslice.slice : Slice, Contiguous, sliced;
 import mir.ndslice.topology : zip, unzip, blocks, universal, map, windows;
 import mir.ndslice.dynamic : strided;
 import mir.ndslice.algorithm : each;
@@ -107,11 +107,11 @@ int separable_imfilter_impl(T)
         deallocate(tempbuf);
     }
 
-    auto input = inputbuf.sliced(rows, cols).universal;
-    auto temp = tempbuf.sliced(rows, cols).universal;
-    auto output = outputbuf.sliced(rows, cols).universal;
-    auto hm = hmask.sliced(hsize).universal;
-    auto vm = vmask.sliced(vsize).universal;
+    auto input = inputbuf.sliced(rows, cols);
+    auto temp = tempbuf.sliced(rows, cols);
+    auto output = outputbuf.sliced(rows, cols);
+    auto hm = hmask.sliced(hsize);
+    auto vm = vmask.sliced(vsize);
 
     if (avx) // add version (compile time flag if avx should be supported)
     {
@@ -142,11 +142,11 @@ int separable_imfilter_impl(T)
 pragma(inline, true)
 void inner_filtering_impl(alias InstructionSet)
 (
-    Slice!(Universal, [2], InstructionSet.Scalar*) input,
-    Slice!(Universal, [2], InstructionSet.Scalar*) temp,
-    Slice!(Universal, [1], InstructionSet.Scalar*) hmask,
-    Slice!(Universal, [1], InstructionSet.Scalar*) vmask,
-    Slice!(Universal, [2], InstructionSet.Scalar*) output,
+    Slice!(Contiguous, [2], InstructionSet.Scalar*) input,
+    Slice!(Contiguous, [2], InstructionSet.Scalar*) temp,
+    Slice!(Contiguous, [1], InstructionSet.Scalar*) hmask,
+    Slice!(Contiguous, [1], InstructionSet.Scalar*) vmask,
+    Slice!(Contiguous, [2], InstructionSet.Scalar*) output,
     Horizontal_kernel_func!InstructionSet hkernel,
     Vertical_kernel_func!InstructionSet vkernel,
 )
@@ -203,14 +203,18 @@ body
         return &e;
     }
 
+    auto _in = input.universal.map!toPtr;
+    auto _tmp = temp.universal.map!toPtr;
+    auto _out = output.universal.map!toPtr;
+
     // Stride buffers to match vector indexing.
-    auto a = input[0 .. $ - vsize, 0 .. $ - hsize].strided!1(velems).map!toPtr;
-    auto t = temp[0 .. $ - vsize, 0 .. $ - hsize].strided!1(velems).map!toPtr;
-    auto b = output[0 .. $ - vsize, 0 .. $ - hsize].strided!1(velems).map!toPtr;
+    auto a = _in[0 .. $ - vsize, 0 .. $ - hsize].strided!1(velems);
+    auto t = _tmp[0 .. $ - vsize, 0 .. $ - hsize].strided!1(velems);
+    auto b = _out[0 .. $ - vsize, 0 .. $ - hsize].strided!1(velems);
 
     // L1 cache block tiling (under 8192 bytes)
     immutable rtiling = 32;
-    immutable ctiling = max(1, 256 / (tbytes * hsize));
+    immutable ctiling = max(size_t(1), 256 / (tbytes * hsize));
 
     // Process blocks
     zip!true(a, t, b)
@@ -232,7 +236,7 @@ body
     // perform scalar processing for the remaining pixels (from vector block selection)
     immutable rrb = a.length!0 - (a.length!0 % rtiling) - vsize;
     immutable crb = (a.length!1 - (a.length!1 % ctiling)) * velems - hsize;
-    immutable rowstride = input._strides[0];
+    immutable rowstride = input.shape[1];
 
     // get scalar kernels
     auto hskernel = get_horizontal_kernel_for_mask!T(hsize);
@@ -241,30 +245,22 @@ body
     // bottom rows
     if (rrb < rows - vsize)
     {
-        a = input[rrb .. $, 0 .. $].map!toPtr;
-        t = temp[rrb .. $, 0 .. $].map!toPtr;
-        b = output[rrb .. $, 0 .. $].map!toPtr;
-
-        zip!true(a, t)[0 .. $, 0 .. $ - hsize].each!((w) { hskernel(w.a, hmask._iterator, w.b, hsize); });
-        zip!true(t, b)[0 .. $ - vsize, 0 .. $ - hsize / 2].each!((w) { vskernel(w.a, vmask._iterator, w.b, vsize, rowstride); });
+        zip!true(_in, _tmp)[rrb .. $, 0 .. $ - hsize].each!((w) { hskernel(w.a, hmask._iterator, w.b, hsize); });
+        zip!true(_tmp, _out)[rrb .. $ - vsize, 0 .. $ - hsize / 2].each!((w) { vskernel(w.a, vmask._iterator, w.b, vsize, rowstride); });
     }
 
     // right columns
     if (crb < cols - vsize)
     {
-        a = input[0 .. $, crb .. $].map!toPtr;
-        t = temp[0 .. $, crb .. $].map!toPtr;
-        b = output[0 .. $, crb .. $].map!toPtr;
-
-        zip!true(a, t)[0 .. $ - vsize, 0 .. $ - hsize].each!((w) { hskernel(w.a, hmask._iterator, w.b, hsize); });
-        zip!true(t, b)[0 .. $ - vsize, 0 .. $ - hsize / 2].each!((w) { vskernel(w.a, vmask._iterator, w.b, vsize, rowstride); });
+        zip!true(_in, _tmp)[0 .. $ - vsize, crb .. $ - hsize].each!((w) { hskernel(w.a, hmask._iterator, w.b, hsize); });
+        zip!true(_tmp, _out)[0 .. $ - vsize, crb .. $ - hsize / 2].each!((w) { vskernel(w.a, vmask._iterator, w.b, vsize, rowstride); });
     }
 }
 
 pragma(inline, true)
 void borders_replicate_impl(T)
 (
-    Slice!(Universal, [2], T*) output,
+    Slice!(Contiguous, [2], T*) output,
     size_t hsize,
     size_t vsize
 )
@@ -273,25 +269,21 @@ void borders_replicate_impl(T)
     auto bottom = output[$ - vsize / 2 - 2 .. $, hsize / 2 .. $ - hsize / 2 + 1];
 
     foreach (c; 0 .. top.length!1)
-    {
         foreach (r; 0 .. top.length!0 - 1)
         {
             top[r, c] = top[hsize / 2 + 1, c];
             bottom[r + 1, c] = bottom[0, c];
         }
-    }
 
     auto left = output[0 .. $, 0 .. hsize / 2 + 1];
     auto right = output[0 .. $, $ - hsize / 2 - 2 .. $];
 
     foreach (r; 0 .. left.length!0)
-    {
         foreach (c; 0 .. left.length!1 - 1)
         {
             left[r, c] = left[r, hsize / 2 + 1];
             right[r, c + 1] = right[r, 0];
         }
-    }
 }
 // Horizontal kernels //////////////////////////////////////////////////////////
 
