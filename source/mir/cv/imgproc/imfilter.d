@@ -59,13 +59,12 @@ int separable_imfilter
     float* outputbuf,
     size_t rows,
     size_t cols,
-    size_t hsize,
-    size_t vsize,
+    size_t ksize,
     int border_handling = BORDER_REPLICATE
 )
 {
     return separable_imfilter_impl
-        (inputbuf, hmask, vmask, outputbuf, rows, cols, hsize, vsize, border_handling);
+        (inputbuf, hmask, vmask, outputbuf, rows, cols, ksize, border_handling);
 }
 
 package(mir.cv):
@@ -95,8 +94,7 @@ int separable_imfilter_impl(T)
     T* outputbuf,
     size_t rows,
     size_t cols,
-    size_t hsize,
-    size_t vsize,
+    size_t ksize,
     int border_handling = BORDER_REPLICATE
 )
 {
@@ -110,23 +108,38 @@ int separable_imfilter_impl(T)
     auto input = inputbuf.sliced(rows, cols);
     auto temp = tempbuf.sliced(rows, cols);
     auto output = outputbuf.sliced(rows, cols);
-    auto hm = hmask.sliced(hsize);
-    auto vm = vmask.sliced(vsize);
+    auto hm = hmask.sliced(ksize);
+    auto vm = vmask.sliced(ksize);
 
     if (avx) // add version (compile time flag if avx should be supported)
     {
-        inner_filtering_impl!(AVX!T)(input, temp, hm, vm, output,
-            &apply_horizontal_kernel_simd!(AVX!T), &apply_vertical_kernel_simd!(AVX!T));
+        inner_filtering_impl!(AVX!T, apply_horizontal_kernel_simd!(AVX!T), apply_vertical_kernel_simd!(AVX!T))
+            (input, temp, hm, vm, output);
     }
-    else version (sse)
+    else if (sse)
     {
-        inner_filtering_impl!(SSE!T)(input, temp, hm, vm, output,
-            &apply_horizontal_kernel_simd!(SSE!T), &apply_vertical_kernel_simd!(SSE!T));
+        inner_filtering_impl!(SSE!T, apply_horizontal_kernel_simd!(SSE!T), apply_vertical_kernel_simd!(SSE!T))
+            (input, temp, hm, vm, output);
     }
     else
     {
-        inner_filtering_impl!(Non_SIMD!T)(input, temp, hm, vm, output,
-            get_horizontal_kernel_for_mask!T(hsize), get_vertical_kernel_for_mask!T(vsize));
+        switch (ksize) {
+        case 3:
+            inner_filtering_impl!(Non_SIMD!T, apply_horizontal_kernel_3!T, apply_vertical_kernel_3!T)
+                (input, temp, hm, vm, output);
+            break;
+        case 5:
+            inner_filtering_impl!(Non_SIMD!T, apply_horizontal_kernel_5!T, apply_vertical_kernel_5!T)
+                (input, temp, hm, vm, output);
+            break;
+        case 7:
+            inner_filtering_impl!(Non_SIMD!T, apply_horizontal_kernel_7!T, apply_vertical_kernel_7!T)
+                (input, temp, hm, vm, output);
+            break;
+        default:
+            inner_filtering_impl!(Non_SIMD!T, apply_horizontal_kernel!T, apply_vertical_kernel!T)
+                (input, temp, hm, vm, output);
+        }
     }
 
     if (border_handling != BORDER_REPLICATE)
@@ -134,21 +147,24 @@ int separable_imfilter_impl(T)
         return ERROR_INVALID_BORDER_METHOD;
     }
 
-    borders_replicate_impl(output, hsize, vsize);
+    borders_replicate_impl(output, ksize);
 
     return 0;
 }
 
 pragma(inline, true)
-void inner_filtering_impl(alias InstructionSet)
+void inner_filtering_impl
+(
+    alias InstructionSet,
+    alias hkernel,
+    alias vkernel
+)
 (
     Slice!(Contiguous, [2], InstructionSet.Scalar*) input,
     Slice!(Contiguous, [2], InstructionSet.Scalar*) temp,
     Slice!(Contiguous, [1], InstructionSet.Scalar*) hmask,
     Slice!(Contiguous, [1], InstructionSet.Scalar*) vmask,
-    Slice!(Contiguous, [2], InstructionSet.Scalar*) output,
-    Horizontal_kernel_func!InstructionSet hkernel,
-    Vertical_kernel_func!InstructionSet vkernel,
+    Slice!(Contiguous, [2], InstructionSet.Scalar*) output
 )
 in
 {
@@ -162,8 +178,7 @@ body
     immutable velems = InstructionSet.elementCount;
     immutable tbytes = T.sizeof;
     immutable vbytes = V.sizeof;
-    immutable hsize = hmask.length;
-    immutable vsize = vmask.length;
+    immutable ksize = hmask.length;
     immutable rows = input.length!0;
     immutable cols = input.length!1;
 
@@ -171,8 +186,8 @@ body
     {
         // It this is SIMD instructions set, allocate vectors for kernels
 
-        auto hk = cast(V[])alignedAllocate(hsize * vbytes, 16); // horizontal simd kernel
-        auto vk = cast(V[])alignedAllocate(vsize * vbytes, 16); // vertical simd kernel
+        auto hk = cast(V[])alignedAllocate(ksize * vbytes, 16); // horizontal simd kernel
+        auto vk = cast(V[])alignedAllocate(ksize * vbytes, 16); // vertical simd kernel
 
         scope (exit)
         {
@@ -180,12 +195,12 @@ body
             deallocate(vk);
         }
 
-        foreach (i; 0 .. hsize)
+        foreach (i; 0 .. ksize)
         {
             hk[i].array[] = hmask[i];
         }
 
-        foreach (i; 0 .. vsize)
+        foreach (i; 0 .. ksize)
         {
             vk[i].array[] = vmask[i];
         }
@@ -193,8 +208,8 @@ body
     else
     {
         // ... otherwise just use input buffers.
-        auto hk = hmask._iterator[0 .. hsize];
-        auto vk = vmask._iterator[0 .. vsize];
+        auto hk = hmask._iterator[0 .. ksize];
+        auto vk = vmask._iterator[0 .. ksize];
     }
 
     // Get pointers to where vectors are loaded (has to be public)
@@ -208,52 +223,52 @@ body
     auto _out = output.universal.map!toPtr;
 
     // Stride buffers to match vector indexing.
-    auto a = _in[0 .. $ - vsize, 0 .. $ - hsize].strided!1(velems);
-    auto t = _tmp[0 .. $ - vsize, 0 .. $ - hsize].strided!1(velems);
-    auto b = _out[0 .. $ - vsize, 0 .. $ - hsize].strided!1(velems);
+    auto a = _in[0 .. $ - ksize, 0 .. $ - ksize].strided!1(velems);
+    auto t = _tmp[0 .. $ - ksize, 0 .. $ - ksize].strided!1(velems);
+    auto b = _out[0 .. $ - ksize, 0 .. $ - ksize].strided!1(velems);
 
     // L1 cache block tiling (under 8192 bytes)
     immutable rtiling = 32;
-    immutable ctiling = max(size_t(1), 256 / (tbytes * hsize));
+    immutable ctiling = max(size_t(1), 256 / (tbytes * ksize));
 
     // Process blocks
     zip!true(a, t, b)
     .blocks(rtiling, ctiling)
   //.parallel
     .each!((b) {
-        b.each!((w) { hkernel(w.a, hk.ptr, w.b, hsize); }); // apply horizontal kernel
-            b.each!((w) { vkernel(w.b, vk.ptr, w.c, vsize, cols); }); // apply vertical kernel
+        b.each!((w) { hkernel(w.a, hk.ptr, w.b, ksize); }); // apply horizontal kernel
+            b.each!((w) { vkernel(w.b, vk.ptr, w.c, ksize, cols); }); // apply vertical kernel
     });
 
     // Fill-in block horizontal borders
-    zip!true(t, b)[rtiling - vsize .. $ - vsize, 0 .. $]
-    .windows(vsize, b.length!1)
+    zip!true(t, b)[rtiling - ksize .. $ - ksize, 0 .. $]
+    .windows(ksize, b.length!1)
     .strided!0(rtiling)
     .each!((b) {
-        b.each!((w) { vkernel(w.a, vk.ptr, w.b, vsize, cols); });
+        b.each!((w) { vkernel(w.a, vk.ptr, w.b, ksize, cols); });
     });
 
     // perform scalar processing for the remaining pixels (from vector block selection)
-    immutable rrb = a.length!0 - (a.length!0 % rtiling) - vsize;
-    immutable crb = (a.length!1 - (a.length!1 % ctiling)) * velems - hsize;
+    immutable rrb = a.length!0 - (a.length!0 % rtiling) - ksize;
+    immutable crb = (a.length!1 - (a.length!1 % ctiling)) * velems - ksize;
     immutable rowstride = input.shape[1];
 
     // get scalar kernels
-    auto hskernel = get_horizontal_kernel_for_mask!T(hsize);
-    auto vskernel = get_vertical_kernel_for_mask!T(vsize);
+    auto hskernel = get_horizontal_kernel_for_mask!T(ksize);
+    auto vskernel = get_vertical_kernel_for_mask!T(ksize);
 
     // bottom rows
-    if (rrb < rows - vsize)
+    if (rrb < rows - ksize)
     {
-        zip!true(_in, _tmp)[rrb .. $, 0 .. $ - hsize].each!((w) { hskernel(w.a, hmask._iterator, w.b, hsize); });
-        zip!true(_tmp, _out)[rrb .. $ - vsize, 0 .. $ - hsize / 2].each!((w) { vskernel(w.a, vmask._iterator, w.b, vsize, rowstride); });
+        zip!true(_in, _tmp)[rrb .. $, 0 .. $ - ksize].each!((w) { hskernel(w.a, hmask._iterator, w.b, ksize); });
+        zip!true(_tmp, _out)[rrb .. $ - ksize, 0 .. $ - ksize / 2].each!((w) { vskernel(w.a, vmask._iterator, w.b, ksize, rowstride); });
     }
 
     // right columns
-    if (crb < cols - vsize)
+    if (crb < cols - ksize)
     {
-        zip!true(_in, _tmp)[0 .. $ - vsize, crb .. $ - hsize].each!((w) { hskernel(w.a, hmask._iterator, w.b, hsize); });
-        zip!true(_tmp, _out)[0 .. $ - vsize, crb .. $ - hsize / 2].each!((w) { vskernel(w.a, vmask._iterator, w.b, vsize, rowstride); });
+        zip!true(_in, _tmp)[0 .. $ - ksize, crb .. $ - ksize].each!((w) { hskernel(w.a, hmask._iterator, w.b, ksize); });
+        zip!true(_tmp, _out)[0 .. $ - ksize, crb .. $ - ksize / 2].each!((w) { vskernel(w.a, vmask._iterator, w.b, ksize, rowstride); });
     }
 }
 
@@ -261,27 +276,26 @@ pragma(inline, true)
 void borders_replicate_impl(T)
 (
     Slice!(Contiguous, [2], T*) output,
-    size_t hsize,
-    size_t vsize
+    size_t ksize,
 )
 {
-    auto top = output[0 .. vsize / 2 + 1, hsize / 2 .. $ - hsize / 2 + 1];
-    auto bottom = output[$ - vsize / 2 - 2 .. $, hsize / 2 .. $ - hsize / 2 + 1];
+    auto top = output[0 .. ksize / 2 + 1, ksize / 2 .. $ - ksize / 2 + 1];
+    auto bottom = output[$ - ksize / 2 - 2 .. $, ksize / 2 .. $ - ksize / 2 + 1];
 
     foreach (c; 0 .. top.length!1)
         foreach (r; 0 .. top.length!0 - 1)
         {
-            top[r, c] = top[hsize / 2 + 1, c];
+            top[r, c] = top[ksize / 2 + 1, c];
             bottom[r + 1, c] = bottom[0, c];
         }
 
-    auto left = output[0 .. $, 0 .. hsize / 2 + 1];
-    auto right = output[0 .. $, $ - hsize / 2 - 2 .. $];
+    auto left = output[0 .. $, 0 .. ksize / 2 + 1];
+    auto right = output[0 .. $, $ - ksize / 2 - 2 .. $];
 
     foreach (r; 0 .. left.length!0)
         foreach (c; 0 .. left.length!1 - 1)
         {
-            left[r, c] = left[r, hsize / 2 + 1];
+            left[r, c] = left[r, ksize / 2 + 1];
             right[r, c + 1] = right[r, 0];
         }
 }
