@@ -6,6 +6,8 @@ module mir.cv.imgproc.imfilter;
 
 import core.stdc.stdlib;
 
+import mir.utility : max;
+
 import mir.ndslice.slice : Slice, Universal, sliced;
 import mir.ndslice.topology : zip, unzip, blocks, universal, map, windows;
 import mir.ndslice.dynamic : strided;
@@ -83,11 +85,6 @@ template Vertical_kernel_func(alias InstructionSet)
         InstructionSet.Scalar*, // output pointer.
         size_t, // size of the kernel mask.
         size_t); // rowstride to read another row element.
-}
-
-pragma(inline, true)
-auto max(T)(T t1, T t2) {
-    return (t1 > t2) ? t1 : t2;
 }
 
 int separable_imfilter_impl(T)
@@ -456,4 +453,3 @@ auto get_vertical_kernel_for_mask(T)(size_t mask_size)
     }
     return &apply_vertical_kernel!T;
 }
-
