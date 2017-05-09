@@ -72,18 +72,20 @@ package(mir.cv):
 template Horizontal_kernel_func(alias InstructionSet)
 {
     alias Horizontal_kernel_func = void function(InstructionSet.Scalar*, // input pointer.
-        InstructionSet.Vector*, // kernel mask pointer.
-        InstructionSet.Scalar*, // output pointer.
-        size_t); // size of the kernel mask.
+                                                 InstructionSet.Vector*, // kernel mask pointer.
+                                                 InstructionSet.Scalar*, // output pointer.
+                                                 size_t, // size of the kernel mask.
+                                                 void*); // additional data
 }
 
 template Vertical_kernel_func(alias InstructionSet)
 {
     alias Vertical_kernel_func = void function(InstructionSet.Scalar*, // input pointer.
-        InstructionSet.Vector*, // kernel mask pointer.
-        InstructionSet.Scalar*, // output pointer.
-        size_t, // size of the kernel mask.
-        size_t); // rowstride to read another row element.
+                                               InstructionSet.Vector*, // kernel mask pointer.
+                                               InstructionSet.Scalar*, // output pointer.
+                                               size_t, // size of the kernel mask.
+                                               size_t, // rowstride to read another row element.
+                                               void*); // additional data.
 }
 
 int separable_imfilter_impl(T)
@@ -173,6 +175,8 @@ in
 }
 body
 {
+    import mir.ndslice.topology : flattened;
+
     alias T = InstructionSet.Scalar;
     alias V = InstructionSet.Vector;
     immutable velems = InstructionSet.elementCount;
@@ -232,21 +236,30 @@ body
     immutable ctiling = max(size_t(1), 256 / (tbytes * ksize));
 
     // Process blocks
-    zip!true(a, t, b)
-    .blocks(rtiling, ctiling)
-  //.parallel
-    .each!((b) {
-        b.each!((w) { hkernel(w.a, hk.ptr, w.b, ksize); }); // apply horizontal kernel
-            b.each!((w) { vkernel(w.b, vk.ptr, w.c, ksize, cols); }); // apply vertical kernel
-    });
+    auto tiles = zip!true(a, t, b)
+        .blocks(rtiling, ctiling)
+        .flattened;
+
+    foreach(tile; tiles) {
+        auto flat_windows = tile.flattened;
+        foreach(window; flat_windows) {
+            hkernel(window.a, hk.ptr, window.b, ksize);
+        }
+        foreach(window; flat_windows) {
+            vkernel(window.b, vk.ptr, window.c, ksize, cols);
+        }
+    }
 
     // Fill-in block horizontal borders
-    zip!true(t, b)[rtiling - ksize .. $ - ksize, 0 .. $]
-    .windows(ksize, b.length!1)
-    .strided!0(rtiling)
-    .each!((b) {
-        b.each!((w) { vkernel(w.a, vk.ptr, w.b, ksize, cols); });
-    });
+    auto middles = zip!true(t, b)[rtiling - ksize .. $ - ksize, 0 .. $]
+        .windows(ksize, b.length!1)
+        .strided!0(rtiling)
+        .flattened;
+
+    foreach(tile; middles)
+        foreach(window; tile.flattened) {
+            vkernel(window.a, vk.ptr, window.b, ksize, cols);
+        }
 
     // perform scalar processing for the remaining pixels (from vector block selection)
     immutable rrb = a.length!0 - (a.length!0 % rtiling) - ksize;
