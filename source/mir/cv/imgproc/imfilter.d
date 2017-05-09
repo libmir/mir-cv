@@ -7,6 +7,7 @@ module mir.cv.imgproc.imfilter;
 import core.stdc.stdlib;
 
 import mir.utility : max;
+import mir.internal.utility : fastmath;
 
 import mir.ndslice.slice : Slice, Contiguous, sliced;
 import mir.ndslice.topology : zip, unzip, blocks, universal, map, windows;
@@ -22,7 +23,7 @@ import core.simd;
 import ldc.simd;
 
 
-extern (C) @system nothrow @nogc:
+extern (C) @system nothrow @nogc @fastmath:
 
 
 // Border handing methods used in image filteirng.
