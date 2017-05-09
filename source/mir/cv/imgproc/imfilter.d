@@ -175,7 +175,7 @@ in
 }
 body
 {
-    import mir.ndslice.topology : flattened;
+    import mir.ndslice.topology : flattened, iota;
 
     alias T = InstructionSet.Scalar;
     alias V = InstructionSet.Vector;
@@ -183,6 +183,7 @@ body
     immutable tbytes = T.sizeof;
     immutable vbytes = V.sizeof;
     immutable ksize = hmask.length;
+    immutable shape = input.shape;
     immutable rows = input.length!0;
     immutable cols = input.length!1;
 
@@ -216,15 +217,9 @@ body
         auto vk = vmask._iterator[0 .. ksize];
     }
 
-    // Get pointers to where vectors are loaded (has to be public)
-    static auto toPtr(ref T e)
-    {
-        return &e;
-    }
-
-    auto _in = input.universal.map!toPtr;
-    auto _tmp = temp.universal.map!toPtr;
-    auto _out = output.universal.map!toPtr;
+    auto _in = iota(shape, input._iterator).universal;
+    auto _tmp = iota(shape, temp._iterator).universal;
+    auto _out = iota(shape, output._iterator).universal;
 
     // Stride buffers to match vector indexing.
     auto a = _in[0 .. $ - ksize, 0 .. $ - ksize].strided!1(velems);
